@@ -44,18 +44,39 @@ const PAGE_HTML = `<!DOCTYPE html><html><body><table><tbody>
   <tr><td><input class="htBlock-textS" value=""></td></tr>
 </tbody></table></body></html>`;
 
+// メッセージ欄がまだ開いていない状態。「入力」ボタンを押すと KOT 側が後から差し込む
+const DEFERRED_PAGE_HTML = PAGE_HTML.replace(
+  '<tr><td><input class="htBlock-textS" value=""></td></tr>',
+  '<tr id="message-row"><td></td></tr>'
+);
+const MESSAGE_ROW_ID = "message-row";
+const DEFERRED_OPEN_MS = 250; // 欄が差し込まれるまでの遅延（実画面の非同期描画を再現）
+const DEFERRED_SETTLE_MS = 800;
+
 /**
  * ページを1つ作り、スクリプトを実行した状態で操作用のヘルパーごと返す。
- * @param {{ savedState?: string | null }} options savedState は localStorage の初期値（"1" | "0"）
+ * @param {object} options
+ * @param {string | null} options.savedState localStorage の初期値（"1" | "0"）
+ * @param {number | null} options.deferredOpenMs 「入力」ボタン押下から欄が現れるまでの遅延（ms）
  */
-const createPage = ({ savedState = null } = {}) => {
-  const dom = new JSDOM(PAGE_HTML, { runScripts: "outside-only", url: PAGE_URL });
+const createPage = ({ savedState = null, deferredOpenMs = null } = {}) => {
+  const html = deferredOpenMs === null ? PAGE_HTML : DEFERRED_PAGE_HTML;
+  const dom = new JSDOM(html, { runScripts: "outside-only", url: PAGE_URL });
   const { window } = dom;
   const { document } = window;
 
   const logs = [];
   for (const level of ["log", "warn", "error"]) {
     window.console[level] = (...args) => logs.push({ level, text: args.join(" ") });
+  }
+
+  if (deferredOpenMs !== null) {
+    document.querySelector("button").addEventListener("click", () => {
+      window.setTimeout(() => {
+        document.getElementById(MESSAGE_ROW_ID).innerHTML =
+          '<td><input class="htBlock-textS" value=""></td>';
+      }, deferredOpenMs);
+    });
   }
 
   if (savedState !== null) window.localStorage.setItem(STORAGE_KEY, savedState);
@@ -71,7 +92,8 @@ const createPage = ({ savedState = null } = {}) => {
     /** スクリプトをもう一度実行する（Console への貼り直し相当） */
     rerun: () => window.eval(SCRIPT),
     /** 非同期の自動入力が終わるのを待つ */
-    settle: () => new Promise(resolve => window.setTimeout(resolve, SETTLE_MS)),
+    settle: (ms = SETTLE_MS) => new Promise(resolve => window.setTimeout(resolve, ms)),
+    warnings: () => logs.filter(entry => entry.level === "warn").map(entry => entry.text),
     panelCount: () => document.querySelectorAll(`#${PANEL_ID}`).length,
     host: () => document.getElementById(PANEL_ID),
     panel: () => {
@@ -177,6 +199,20 @@ test.describe("自動入力（ON のとき）", () => {
 
     assert.ok(page.isCleared("leave_type_code1"), "休暇種別が未選択に戻っていない");
     assert.ok(page.isCleared("leave_type_mode1"), "休暇モードが未選択に戻っていない");
+  });
+
+  // 実画面では「入力」ボタンで欄を開いた直後はまだ DOM に無く、少し遅れて現れる。
+  // 押した直後に探すだけだと「メッセージ欄が見つからない」になる（回帰防止）。
+  test("「入力」ボタンで後から開くメッセージ欄にも入力できる", async () => {
+    const page = createPage({ deferredOpenMs: DEFERRED_OPEN_MS });
+    page.selectSchedule("通常勤務(10-19時)");
+    await page.settle(DEFERRED_SETTLE_MS);
+
+    assert.equal(page.message(), "早番");
+    assert.deepEqual(
+      page.warnings().filter(text => text.includes("メッセージ欄が見つからない")),
+      []
+    );
   });
 
   test("手入力済みのメッセージは上書きしない", async () => {
