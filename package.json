@@ -1,6 +1,6 @@
 {
   "name": "kot-autofill",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "KING OF TIME スケジュール申請の入力補助スクリプト",
   "private": true,
   "license": "MIT",

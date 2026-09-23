@@ -16,6 +16,7 @@
     "公休":              { memo: "公休", leave: { type: "公休", mode: "全日休" } }, // 勤務日種別はKOTが自動設定
   };
 
+  const VERSION = "1.1.0"; // 貼り付けたコードの版を判別するための目印
   const PANEL_ID = "kot-autofill-panel";
   const STORAGE_KEY = "kot-autofill:enabled";
   const PANEL_OFFSET_PX = 16;
@@ -23,6 +24,13 @@
   const SELECT_ID_PREFIX = "requestedSchedulePatternList_";
   const OPTION_WAIT_TRIES = 10;
   const OPTION_WAIT_MS = 100;
+  const MESSAGE_NAME_SELECTOR = 'input[name="remark_list"]';
+  const MESSAGE_STRICT_SELECTORS = [MESSAGE_NAME_SELECTOR, "input.htBlock-textS"];
+  const MESSAGE_LOOSE_SELECTORS = ["input[type='text']", "textarea"];
+  const FOLDABLE_ROW_ID_ATTR = "data-ht-foldable-row-id";
+  const MESSAGE_OPEN_LABEL = "入力";
+  const MESSAGE_OPEN_TRIES = 15;
+  const MESSAGE_OPEN_WAIT_MS = 100;
 
   const norm = s => (s || "").normalize("NFKC").replace(/\s/g, "");
   const rules = Object.fromEntries(Object.entries(RULES).map(([k, v]) => [norm(k), v]));
@@ -74,6 +82,7 @@
 
     const host = document.createElement("div");
     host.id = PANEL_ID;
+    host.title = `kot-autofill ${VERSION}`;
     host.style.cssText = `position:fixed;left:${PANEL_OFFSET_PX}px;bottom:${PANEL_OFFSET_PX}px;z-index:${PANEL_Z_INDEX};`;
 
     const shadow = host.attachShadow({ mode: "open" });
@@ -125,15 +134,77 @@
   };
   const resetSelect = sel => { if (sel && sel.selectedIndex !== 0) { sel.selectedIndex = 0; fire(sel); } };
 
-  const findMessageInput = sel => {
+  // ---- メッセージ欄の特定 ----------------------------------------------------
+  // 申請メッセージ欄は申請スケジュールとは別の <tr>（折りたたみ行）にあり、
+  // 間に空の dummyRow が挟まる。隣の行を見るだけでは見つからないため、
+  // 行の並び順に依存しない方法から順に試す。
+
+  const isScheduleRow = row => !!row.querySelector(`select[id^="${SELECT_ID_PREFIX}"]`);
+
+  const queryInput = (scope, selectors) => {
+    for (const selector of selectors) {
+      const found = scope.querySelector(selector);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  // 1) 折りたたみ行のid経由。同じ data-ht-foldable-row-id を持つ要素同士が対応する
+  const byFoldableRowId = sel => {
+    const anchor = sel.closest("tr")?.querySelector(`[${FOLDABLE_ROW_ID_ATTR}]`);
+    const rowId = anchor?.getAttribute(FOLDABLE_ROW_ID_ATTR);
+    if (!rowId) return null;
+    for (const scope of document.querySelectorAll(`[${FOLDABLE_ROW_ID_ATTR}="${rowId}"]`)) {
+      const input = queryInput(scope, [...MESSAGE_STRICT_SELECTORS, ...MESSAGE_LOOSE_SELECTORS]);
+      if (input) return input;
+    }
+    return null;
+  };
+
+  // 2) 出現順で対応付ける。数が一致するならn番目同士が同じ日なので、
+  //    メッセージ行が申請行の前にあっても後ろにあっても正しく引ける
+  const byDocumentOrder = sel => {
+    const selects = [...document.querySelectorAll(`select[id^="${SELECT_ID_PREFIX}"]`)];
+    const inputs = [...document.querySelectorAll(MESSAGE_NAME_SELECTOR)];
+    if (selects.length === 0 || selects.length !== inputs.length) return null;
+    const index = selects.indexOf(sel);
+    return index === -1 ? null : inputs[index];
+  };
+
+  // 3) 近接する行を走査する（上の2つが使えない場合の保険）
+  const byNearbyRows = sel => {
     const row = sel.closest("tr");
     if (!row) return null;
-    let input = row.nextElementSibling?.querySelector("input.htBlock-textS");
-    if (!input) {
-      [...row.querySelectorAll("button")].find(b => b.textContent.includes("入力"))?.click();
-      input = row.nextElementSibling?.querySelector("input.htBlock-textS");
+    const scopes = [];
+    for (let n = row.nextElementSibling; n && !isScheduleRow(n); n = n.nextElementSibling) scopes.push(n);
+    for (let p = row.previousElementSibling; p && !isScheduleRow(p); p = p.previousElementSibling) scopes.push(p);
+    for (const scope of scopes) {
+      const input = queryInput(scope, [...MESSAGE_STRICT_SELECTORS, ...MESSAGE_LOOSE_SELECTORS]);
+      if (input) return input;
     }
-    return input;
+    // 行自身は時刻欄などを誤って拾わないよう、厳密なセレクタでのみ探す
+    return queryInput(row, MESSAGE_STRICT_SELECTORS);
+  };
+
+  const locateMessageInput = sel => byFoldableRowId(sel) ?? byDocumentOrder(sel) ?? byNearbyRows(sel);
+
+  const findMessageInput = async sel => {
+    const existing = locateMessageInput(sel);
+    if (existing) return existing;
+
+    // 欄がまだDOMに無い場合だけ「入力」ボタンで開き、現れるまで待つ
+    const row = sel.closest("tr");
+    const opener = row && [...row.querySelectorAll("button, a, input[type='button'], input[type='submit']")]
+      .find(el => (el.textContent || el.value || "").includes(MESSAGE_OPEN_LABEL));
+    if (!opener) return null;
+    opener.click();
+
+    for (let i = 0; i < MESSAGE_OPEN_TRIES; i++) {
+      await sleep(MESSAGE_OPEN_WAIT_MS);
+      const input = locateMessageInput(sel);
+      if (input) return input;
+    }
+    return null;
   };
 
   const onChange = async e => {
@@ -161,8 +232,12 @@
       }
 
       // 2) 申請メッセージ（手入力の内容は上書きしない）
-      const input = findMessageInput(sel);
-      if (!input) { notify(`${day} メッセージ欄が見つからない`, "warn"); return; }
+      const input = await findMessageInput(sel);
+      if (!input) {
+        notify(`${day} メッセージ欄が見つからない`, "warn");
+        console.warn("[kot] 対象の行:", sel.closest("tr")); // 調査用にDOMを出す
+        return;
+      }
       const memo = rule?.memo ?? "";
       if (input.value && !ourMemos.has(input.value)) { notify(`${day} 手入力のメッセージを尊重（変更なし）`); return; }
       if (input.value !== memo) { input.value = memo; fire(input); }
@@ -212,6 +287,29 @@
   else if (typeof prev === "function") document.removeEventListener("change", prev, true); // 旧版が動いている場合
 
   window.__kotAutofill = {
+    version: VERSION,
+    /** メッセージ欄をどう特定できるかを調べる（うまく入らないときの原因切り分け用） */
+    diagnose: () => {
+      const selects = [...document.querySelectorAll(`select[id^="${SELECT_ID_PREFIX}"]`)];
+      const report = {
+        version: VERSION,
+        申請スケジュール数: selects.length,
+        "remark_list数": document.querySelectorAll(MESSAGE_NAME_SELECTOR).length,
+        "htBlock_textS数": document.querySelectorAll("input.htBlock-textS").length,
+      };
+      const sel = selects[0];
+      if (sel) {
+        report.最初の日付 = sel.id.split("_").pop();
+        report.foldableRowId =
+          sel.closest("tr")?.querySelector(`[${FOLDABLE_ROW_ID_ATTR}]`)?.getAttribute(FOLDABLE_ROW_ID_ATTR) ?? null;
+        report.経路1_id経由 = !!byFoldableRowId(sel);
+        report.経路2_出現順 = !!byDocumentOrder(sel);
+        report.経路3_近接行 = !!byNearbyRows(sel);
+        report.対象の行 = sel.closest("tr");
+      }
+      console.log("[kot] 診断結果", report);
+      return report;
+    },
     enable: () => setEnabled(true),
     disable: () => setEnabled(false),
     isEnabled: () => enabled,
@@ -222,6 +320,7 @@
     },
   };
 
+  console.log(`[kot] kot-autofill ${VERSION} を読み込みました（__kotAutofill.diagnose() で診断できます）`);
   panel.render(enabled);
   setEnabled(loadEnabled());
   if (!enabled) notify("停止中（左下のボタンで再開）");
