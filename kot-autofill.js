@@ -23,8 +23,10 @@
   const SELECT_ID_PREFIX = "requestedSchedulePatternList_";
   const OPTION_WAIT_TRIES = 10;
   const OPTION_WAIT_MS = 100;
-  const MESSAGE_INPUT_SELECTOR = "input.htBlock-textS";
-  const MESSAGE_INPUT_FALLBACK_SELECTOR = "input[type='text'], textarea";
+  const MESSAGE_NAME_SELECTOR = 'input[name="remark_list"]';
+  const MESSAGE_STRICT_SELECTORS = [MESSAGE_NAME_SELECTOR, "input.htBlock-textS"];
+  const MESSAGE_LOOSE_SELECTORS = ["input[type='text']", "textarea"];
+  const FOLDABLE_ROW_ID_ATTR = "data-ht-foldable-row-id";
   const MESSAGE_OPEN_LABEL = "入力";
   const MESSAGE_OPEN_TRIES = 15;
   const MESSAGE_OPEN_WAIT_MS = 100;
@@ -130,47 +132,74 @@
   };
   const resetSelect = sel => { if (sel && sel.selectedIndex !== 0) { sel.selectedIndex = 0; fire(sel); } };
 
-  // 申請スケジュールの行から、次の日付の行に当たるまでを「この日のブロック」とみなす
-  const rowsBelow = row => {
-    const rows = [];
-    for (let next = row.nextElementSibling; next; next = next.nextElementSibling) {
-      if (next.querySelector(`select[id^="${SELECT_ID_PREFIX}"]`)) break;
-      rows.push(next);
-    }
-    return rows;
-  };
+  // ---- メッセージ欄の特定 ----------------------------------------------------
+  // 申請メッセージ欄は申請スケジュールとは別の <tr>（折りたたみ行）にあり、
+  // 間に空の dummyRow が挟まる。隣の行を見るだけでは見つからないため、
+  // 行の並び順に依存しない方法から順に試す。
 
-  const queryMessageInput = row => {
-    const below = rowsBelow(row);
-    // まずクラス指定で厳密に探す（行自身も見る）
-    for (const scope of [row, ...below]) {
-      const strict = scope.querySelector(MESSAGE_INPUT_SELECTOR);
-      if (strict) return strict;
-    }
-    // 見つからなければ後続の行に限って緩く探す。行自身の時刻欄などを拾わないよう対象を絞る
-    for (const scope of below) {
-      const loose = scope.querySelector(MESSAGE_INPUT_FALLBACK_SELECTOR);
-      if (loose) return loose;
+  const isScheduleRow = row => !!row.querySelector(`select[id^="${SELECT_ID_PREFIX}"]`);
+
+  const queryInput = (scope, selectors) => {
+    for (const selector of selectors) {
+      const found = scope.querySelector(selector);
+      if (found) return found;
     }
     return null;
   };
 
-  const findMessageInput = async sel => {
+  // 1) 折りたたみ行のid経由。同じ data-ht-foldable-row-id を持つ要素同士が対応する
+  const byFoldableRowId = sel => {
+    const anchor = sel.closest("tr")?.querySelector(`[${FOLDABLE_ROW_ID_ATTR}]`);
+    const rowId = anchor?.getAttribute(FOLDABLE_ROW_ID_ATTR);
+    if (!rowId) return null;
+    for (const scope of document.querySelectorAll(`[${FOLDABLE_ROW_ID_ATTR}="${rowId}"]`)) {
+      const input = queryInput(scope, [...MESSAGE_STRICT_SELECTORS, ...MESSAGE_LOOSE_SELECTORS]);
+      if (input) return input;
+    }
+    return null;
+  };
+
+  // 2) 出現順で対応付ける。数が一致するならn番目同士が同じ日なので、
+  //    メッセージ行が申請行の前にあっても後ろにあっても正しく引ける
+  const byDocumentOrder = sel => {
+    const selects = [...document.querySelectorAll(`select[id^="${SELECT_ID_PREFIX}"]`)];
+    const inputs = [...document.querySelectorAll(MESSAGE_NAME_SELECTOR)];
+    if (selects.length === 0 || selects.length !== inputs.length) return null;
+    const index = selects.indexOf(sel);
+    return index === -1 ? null : inputs[index];
+  };
+
+  // 3) 近接する行を走査する（上の2つが使えない場合の保険）
+  const byNearbyRows = sel => {
     const row = sel.closest("tr");
     if (!row) return null;
+    const scopes = [];
+    for (let n = row.nextElementSibling; n && !isScheduleRow(n); n = n.nextElementSibling) scopes.push(n);
+    for (let p = row.previousElementSibling; p && !isScheduleRow(p); p = p.previousElementSibling) scopes.push(p);
+    for (const scope of scopes) {
+      const input = queryInput(scope, [...MESSAGE_STRICT_SELECTORS, ...MESSAGE_LOOSE_SELECTORS]);
+      if (input) return input;
+    }
+    // 行自身は時刻欄などを誤って拾わないよう、厳密なセレクタでのみ探す
+    return queryInput(row, MESSAGE_STRICT_SELECTORS);
+  };
 
-    const opened = queryMessageInput(row);
-    if (opened) return opened;
+  const locateMessageInput = sel => byFoldableRowId(sel) ?? byDocumentOrder(sel) ?? byNearbyRows(sel);
 
-    // 「入力」ボタンで欄を開く。KOT側が非同期に差し込むため、出てくるまで待つ
-    const opener = [...row.querySelectorAll("button, a, input[type='button'], input[type='submit']")]
+  const findMessageInput = async sel => {
+    const existing = locateMessageInput(sel);
+    if (existing) return existing;
+
+    // 欄がまだDOMに無い場合だけ「入力」ボタンで開き、現れるまで待つ
+    const row = sel.closest("tr");
+    const opener = row && [...row.querySelectorAll("button, a, input[type='button'], input[type='submit']")]
       .find(el => (el.textContent || el.value || "").includes(MESSAGE_OPEN_LABEL));
     if (!opener) return null;
     opener.click();
 
     for (let i = 0; i < MESSAGE_OPEN_TRIES; i++) {
       await sleep(MESSAGE_OPEN_WAIT_MS);
-      const input = queryMessageInput(row);
+      const input = locateMessageInput(sel);
       if (input) return input;
     }
     return null;
