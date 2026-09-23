@@ -16,6 +16,7 @@
     "公休":              { memo: "公休", leave: { type: "公休", mode: "全日休" } }, // 勤務日種別はKOTが自動設定
   };
 
+  const VERSION = "1.1.0"; // 貼り付けたコードの版を判別するための目印
   const PANEL_ID = "kot-autofill-panel";
   const STORAGE_KEY = "kot-autofill:enabled";
   const PANEL_OFFSET_PX = 16;
@@ -81,6 +82,7 @@
 
     const host = document.createElement("div");
     host.id = PANEL_ID;
+    host.title = `kot-autofill ${VERSION}`;
     host.style.cssText = `position:fixed;left:${PANEL_OFFSET_PX}px;bottom:${PANEL_OFFSET_PX}px;z-index:${PANEL_Z_INDEX};`;
 
     const shadow = host.attachShadow({ mode: "open" });
@@ -285,6 +287,29 @@
   else if (typeof prev === "function") document.removeEventListener("change", prev, true); // 旧版が動いている場合
 
   window.__kotAutofill = {
+    version: VERSION,
+    /** メッセージ欄をどう特定できるかを調べる（うまく入らないときの原因切り分け用） */
+    diagnose: () => {
+      const selects = [...document.querySelectorAll(`select[id^="${SELECT_ID_PREFIX}"]`)];
+      const report = {
+        version: VERSION,
+        申請スケジュール数: selects.length,
+        "remark_list数": document.querySelectorAll(MESSAGE_NAME_SELECTOR).length,
+        "htBlock_textS数": document.querySelectorAll("input.htBlock-textS").length,
+      };
+      const sel = selects[0];
+      if (sel) {
+        report.最初の日付 = sel.id.split("_").pop();
+        report.foldableRowId =
+          sel.closest("tr")?.querySelector(`[${FOLDABLE_ROW_ID_ATTR}]`)?.getAttribute(FOLDABLE_ROW_ID_ATTR) ?? null;
+        report.経路1_id経由 = !!byFoldableRowId(sel);
+        report.経路2_出現順 = !!byDocumentOrder(sel);
+        report.経路3_近接行 = !!byNearbyRows(sel);
+        report.対象の行 = sel.closest("tr");
+      }
+      console.log("[kot] 診断結果", report);
+      return report;
+    },
     enable: () => setEnabled(true),
     disable: () => setEnabled(false),
     isEnabled: () => enabled,
@@ -295,6 +320,7 @@
     },
   };
 
+  console.log(`[kot] kot-autofill ${VERSION} を読み込みました（__kotAutofill.diagnose() で診断できます）`);
   panel.render(enabled);
   setEnabled(loadEnabled());
   if (!enabled) notify("停止中（左下のボタンで再開）");
