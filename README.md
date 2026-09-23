@@ -44,7 +44,7 @@ KING OF TIME の「スケジュール申請」画面で、各日の**申請ス�
 
 ## 使い方
 
-### その場で 1 回だけ使う
+### Console に貼り付ける（いちばん手軽）
 
 1. KING OF TIME のスケジュール申請画面を開く
 2. DevTools（F12）の Console を開く
@@ -53,10 +53,22 @@ KING OF TIME の「スケジュール申請」画面で、各日の**申請ス�
 
 ページを再読み込みすると無効になるので、その都度実行してください。
 
-### 常用する（推奨）
+### DevTools の Snippets に保存する（貼り付けを省く／拡張機能は不要）
+
+毎回貼り付けるのが手間なら、ブラウザ標準の機能だけで保存できます。
+**拡張機能のインストールが許可されていない環境でも使えます。**
+
+1. DevTools → **Sources** タブ → 左ペインの **Snippets**
+2. **New snippet** で `kot-autofill` を作り、スクリプト全文を貼り付けて保存（Ctrl+S）
+3. 以降は Snippets から選んで **Ctrl+Enter** で実行
+
+スクリプトはブラウザに保存されるので、次回以降は貼り付け不要です。
+
+### 拡張機能が使える場合
 
 [Tampermonkey](https://www.tampermonkey.net/) などのユーザースクリプトマネージャに登録すると、
-画面を開くたびに自動で有効になります。`@match` は自社の KING OF TIME の URL に合わせてください。
+画面を開くたびに自動で有効になり、実行操作そのものが不要になります。
+`@match` は自社の KING OF TIME の URL に合わせてください。
 
 ```javascript
 // ==UserScript==
@@ -81,10 +93,20 @@ const RULES = {
 - `memo` — 申請メッセージ欄に入れる文字列
 - `leave` — `null` なら休暇種別・休暇モードに触らない。設定する場合は `{ type, mode }` を表示名で指定
 
+## 動作確認
+
+パネルの見た目・ON/OFF の挙動は、**どのページでも確認できます**。適当なサイトの Console に
+貼り付ければ左下にパネルが出ます。`requestedSchedulePatternList_` で始まる id を持つ
+`<select>` が無いページでは自動入力側は一切動かないため、安全に試せます。
+
+自動入力そのものは KING OF TIME の実画面でしか確認できません。初回は 1 日分だけ選んで、
+パネル下段に `09/23 「早番」を入力` と出るか、黄色い警告が出ていないかを確認してください。
+
 ## 注意
 
-- KING OF TIME の DOM 構造（`requestedSchedulePatternList_*`、`leave_type_code1*` などの id）に
-  依存しています。画面仕様が変わると動かなくなる可能性があります。
+- KING OF TIME の DOM 構造（`requestedSchedulePatternList_*`、`leave_type_code1*`、
+  `input.htBlock-textS` などの id / class）に依存しています。画面仕様が変わると
+  動かなくなる可能性があります。
 - 自動入力はあくまで補助です。**申請前に必ず内容を目視で確認**してください。
 - 非公式のスクリプトであり、株式会社ヒューマンテクノロジーズとは無関係です。
 
