@@ -23,6 +23,11 @@
   const SELECT_ID_PREFIX = "requestedSchedulePatternList_";
   const OPTION_WAIT_TRIES = 10;
   const OPTION_WAIT_MS = 100;
+  const MESSAGE_INPUT_SELECTOR = "input.htBlock-textS";
+  const MESSAGE_INPUT_FALLBACK_SELECTOR = "input[type='text'], textarea";
+  const MESSAGE_OPEN_LABEL = "入力";
+  const MESSAGE_OPEN_TRIES = 15;
+  const MESSAGE_OPEN_WAIT_MS = 100;
 
   const norm = s => (s || "").normalize("NFKC").replace(/\s/g, "");
   const rules = Object.fromEntries(Object.entries(RULES).map(([k, v]) => [norm(k), v]));
@@ -125,15 +130,50 @@
   };
   const resetSelect = sel => { if (sel && sel.selectedIndex !== 0) { sel.selectedIndex = 0; fire(sel); } };
 
-  const findMessageInput = sel => {
+  // 申請スケジュールの行から、次の日付の行に当たるまでを「この日のブロック」とみなす
+  const rowsBelow = row => {
+    const rows = [];
+    for (let next = row.nextElementSibling; next; next = next.nextElementSibling) {
+      if (next.querySelector(`select[id^="${SELECT_ID_PREFIX}"]`)) break;
+      rows.push(next);
+    }
+    return rows;
+  };
+
+  const queryMessageInput = row => {
+    const below = rowsBelow(row);
+    // まずクラス指定で厳密に探す（行自身も見る）
+    for (const scope of [row, ...below]) {
+      const strict = scope.querySelector(MESSAGE_INPUT_SELECTOR);
+      if (strict) return strict;
+    }
+    // 見つからなければ後続の行に限って緩く探す。行自身の時刻欄などを拾わないよう対象を絞る
+    for (const scope of below) {
+      const loose = scope.querySelector(MESSAGE_INPUT_FALLBACK_SELECTOR);
+      if (loose) return loose;
+    }
+    return null;
+  };
+
+  const findMessageInput = async sel => {
     const row = sel.closest("tr");
     if (!row) return null;
-    let input = row.nextElementSibling?.querySelector("input.htBlock-textS");
-    if (!input) {
-      [...row.querySelectorAll("button")].find(b => b.textContent.includes("入力"))?.click();
-      input = row.nextElementSibling?.querySelector("input.htBlock-textS");
+
+    const opened = queryMessageInput(row);
+    if (opened) return opened;
+
+    // 「入力」ボタンで欄を開く。KOT側が非同期に差し込むため、出てくるまで待つ
+    const opener = [...row.querySelectorAll("button, a, input[type='button'], input[type='submit']")]
+      .find(el => (el.textContent || el.value || "").includes(MESSAGE_OPEN_LABEL));
+    if (!opener) return null;
+    opener.click();
+
+    for (let i = 0; i < MESSAGE_OPEN_TRIES; i++) {
+      await sleep(MESSAGE_OPEN_WAIT_MS);
+      const input = queryMessageInput(row);
+      if (input) return input;
     }
-    return input;
+    return null;
   };
 
   const onChange = async e => {
@@ -161,8 +201,12 @@
       }
 
       // 2) 申請メッセージ（手入力の内容は上書きしない）
-      const input = findMessageInput(sel);
-      if (!input) { notify(`${day} メッセージ欄が見つからない`, "warn"); return; }
+      const input = await findMessageInput(sel);
+      if (!input) {
+        notify(`${day} メッセージ欄が見つからない`, "warn");
+        console.warn("[kot] 対象の行:", sel.closest("tr")); // 調査用にDOMを出す
+        return;
+      }
       const memo = rule?.memo ?? "";
       if (input.value && !ourMemos.has(input.value)) { notify(`${day} 手入力のメッセージを尊重（変更なし）`); return; }
       if (input.value !== memo) { input.value = memo; fire(input); }
